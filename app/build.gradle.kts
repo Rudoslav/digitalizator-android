@@ -1,7 +1,14 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+// podpis release APK: kľúč je mimo repa (~/.config/digitalizator/android-keystore.properties)
+val ksFile = File(System.getProperty("user.home"), ".config/digitalizator/android-keystore.properties")
+val ks = Properties()
+if (ksFile.exists()) ksFile.inputStream().use { ks.load(it) }
 
 android {
     namespace = "sk.digitalizator.camera"
@@ -13,7 +20,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1"
+        versionName = "0.1.0"
     }
 
     compileOptions {
@@ -21,6 +28,20 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+
+    if (ksFile.exists()) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(ks.getProperty("storeFile"))
+                storePassword = ks.getProperty("storePassword")
+                keyAlias = ks.getProperty("keyAlias")
+                keyPassword = ks.getProperty("keyPassword")
+            }
+        }
+        buildTypes {
+            getByName("release") { signingConfig = signingConfigs.getByName("release") }
+        }
+    }
 }
 
 val cameraX = "1.4.1"
