@@ -24,3 +24,6 @@ JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew assembleRelease   # podpísaný
 ```
 Release sa podpisuje kľúčom z `~/.config/digitalizator/android-keystore.properties` (mimo repa; položky `storeFile`, `storePassword`, `keyAlias`, `keyPassword`).
 Bez neho vznikne nepodpísaný APK.
+
+## Licencia
+MIT (c) 2026 Rudoslav. Pri použití alebo úprave treba zachovať toto autorstvo a text licencie. Používa AndroidX CameraX (Apache-2.0).
