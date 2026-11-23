@@ -1,11 +1,20 @@
 package sk.digitalizator.camera
 
 import android.Manifest
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.Matrix
+import android.os.BatteryManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowManager
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -37,25 +46,89 @@ class MainActivity : ComponentActivity() {
     private val camExecutor = Executors.newSingleThreadExecutor()
     private val netExecutor = Executors.newCachedThreadPool()
     private lateinit var imageCapture: ImageCapture
-    private lateinit var info: TextView
+    private lateinit var statusView: TextView
+    private lateinit var cameraView: TextView
+    private val handler = Handler(Looper.getMainLooper())
+    private val ticker = object : Runnable {
+        override fun run() {
+            refreshStatus()
+            handler.postDelayed(this, 1500)
+        }
+    }
+
+    /** Kedy naposledy počítač komunikoval s appkou (náhľad, fotka, stav). */
+    @Volatile private var lastClient = 0L
 
     @Volatile private var latestPreview: ByteArray? = null
 
     private val askCamera =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-            if (ok) startCamera() else info.text = "Bez povolenia kamery appka nefunguje."
+            if (ok) startCamera() else cameraView.text = "Bez povolenia kamery appka nefunguje."
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        info = TextView(this).apply {
-            textSize = 22f
+        fun label(size: Float, bold: Boolean = false) = TextView(this).apply {
+            textSize = size
             gravity = Gravity.CENTER
-            text = "Digitalizátor kamera\nŠtartujem…"
+            setPadding(32, 16, 32, 16)
+            if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
         }
-        setContentView(info)
+        val title = label(22f, true).apply { text = "Digitalizátor kamera" }
+        statusView = label(26f, true)
+        cameraView = label(18f).apply { text = "Štartujem kameru…" }
+        val hint = label(16f).apply {
+            text = "Uistite sa, že je na telefóne zapnuté USB ladenie\n(Nastavenia → Možnosti vývojára → USB ladenie)."
+            setTextColor(Color.DKGRAY)
+        }
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            addView(title); addView(statusView); addView(cameraView); addView(hint)
+        })
+        refreshStatus()
         askCamera.launch(Manifest.permission.CAMERA)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        handler.post(ticker)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        handler.removeCallbacks(ticker)
+    }
+
+    private fun usbPlugged(): Boolean {
+        val i = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val plugged = i?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+        return plugged and BatteryManager.BATTERY_PLUGGED_USB != 0
+    }
+
+    private fun usbDebugging(): Boolean =
+        Settings.Global.getInt(contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
+
+    /** Pripojené = USB kábel + zapnuté USB ladenie, alebo počítač práve komunikuje s appkou. */
+    private fun refreshStatus() {
+        val pcActive = SystemClock.elapsedRealtime() - lastClient < 5000
+        val plugged = usbPlugged()
+        val adb = usbDebugging()
+        when {
+            pcActive || (plugged && adb) -> {
+                statusView.text = "Pripojené"
+                statusView.setTextColor(Color.rgb(46, 125, 50))
+            }
+            plugged -> {
+                statusView.text = "Kábel je pripojený,\nUSB ladenie je vypnuté"
+                statusView.setTextColor(Color.rgb(230, 120, 0))
+            }
+            else -> {
+                statusView.text = "Nepripojené\nPripojte USB kábel k počítaču"
+                statusView.setTextColor(Color.rgb(198, 40, 40))
+            }
+        }
     }
 
     private fun startCamera() {
@@ -102,7 +175,7 @@ class MainActivity : ComponentActivity() {
             provider.unbindAll()
             provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, imageCapture, analysis)
             startServer()
-            info.text = "Digitalizátor kamera\nBeží (port $port).\nPripojte USB kábel k počítaču."
+            cameraView.text = "Kamera beží (port $port)"
         }, ContextCompat.getMainExecutor(this))
     }
 
@@ -122,6 +195,7 @@ class MainActivity : ComponentActivity() {
             val request = reader.readLine() ?: return
             while (true) { if (reader.readLine().isNullOrEmpty()) break }
             val path = request.split(" ").getOrElse(1) { "/" }
+            lastClient = SystemClock.elapsedRealtime()
             val out = it.getOutputStream()
             when {
                 path.startsWith("/status") -> respond(out, "text/plain", "ok".toByteArray())
@@ -152,6 +226,7 @@ class MainActivity : ComponentActivity() {
         var last: ByteArray? = null
         try {
             while (true) {
+                lastClient = SystemClock.elapsedRealtime()
                 val frame = latestPreview
                 if (frame != null && frame !== last) {
                     out.write("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.size}\r\n\r\n".toByteArray())
